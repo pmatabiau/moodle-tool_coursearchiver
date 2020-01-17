@@ -409,20 +409,36 @@ class tool_coursearchiver_processor {
      *
      * @return array of courses and array of owners attached to it
      */
-    protected function get_courses_and_their_owners() {
-        global $DB;
-        $owners = array();
-        $role = $DB->get_record('role', array('shortname' => 'editingteacher'));
-        foreach ($this->data as $course) {
-            if ($this->exists($course)) {
-                $owners[$course] = $this->get_course_users_with_role($course, $role->id);
-            }
-        }
+		protected function get_courses_and_their_owners(){
+			global $DB;
+			$out = [];
+			$role = $DB->get_record('role', array('shortname' => 'editingteacher'));
+			// Fill courses
+			list($insql, $inparams) = $DB->get_in_or_equal($this->data);
+			$aCourses = $DB->get_records_sql("SELECT id,idnumber,shortname,fullname,visible FROM {course} WHERE id $insql", $inparams);
+			foreach ($aCourses as $courseid => $oCourse) {
+				$out[$courseid]['course'] = $oCourse;
+			}
+			// Fill owners
+			list($insqlOwners, $inparamsOwners) = $DB->get_in_or_equal(array_keys($aCourses));
+			$sqlOwners = <<<EOT
+SELECT DISTINCT CONCAT(ctx.instanceid,u.id) AS mdlkey, ctx.instanceid AS courseid, u.id, u.email, u.firstname, u.lastname
+FROM {context} ctx
+INNER JOIN {role_assignments} ra ON ra.contextid = ctx.id
+INNER JOIN {user} u ON u.id = ra.userid
+WHERE ctx.contextlevel = 50
+AND ctx.instanceid $insqlOwners
+AND ra.roleid = {$role->id}
+EOT;
+			$aOwners = $DB->get_records_sql($sqlOwners, $inparamsOwners);
+			foreach ($aOwners as $oOwner){
+				$out[$oOwner->courseid]['owners'][$oOwner->id] = $oOwner;
+			}
 
-        return $owners;
-    }
+			return $out;
+		}
 
-    /**
+		/**
      * Return an array of users in a course with a given role.
      *
      * @param int $courseid id of the moodle course.
@@ -834,10 +850,7 @@ class tool_coursearchiver_processor {
             $event->contexturl = $CFG->wwwroot;
             $event->contexturlname = get_string('coursearchiver', 'tool_coursearchiver');
             $event->replyto = $admin->email;
-
-            if ($CFG->version > 2016110200) { // Moodle 3.2 and after.
-                $event->courseid = SITEID;
-            }
+            $event->courseid = SITEID;
 
             try {
                 if (message_send($event) === false) {
